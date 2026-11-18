@@ -9,6 +9,9 @@ import {
   getSavedDocumentById,
   saveOrUpdateDocument,
   deleteSavedDocument,
+  listStoredTemplates,
+  replaceStoredTemplates,
+  clearStoredTemplates,
 } from './serverDb.ts';
 
 dotenv.config();
@@ -34,8 +37,9 @@ const ai = new GoogleGenAI({
   },
 });
 
-// Track free-tier daily quota cooldown for gemini-4-hydrogen so we don't trigger repeated 429 errors
+// Track free-tier quota/rate-limit cooldowns for both models so we don't fire doomed 429 retries
 let hydrogenCooldownUntil = 0;
+let liteCooldownUntil = 0;
 
 function isQuotaOrRateLimitError(err: any): boolean {
   const msg = String(err?.message || err || '');
@@ -44,9 +48,11 @@ function isQuotaOrRateLimitError(err: any): boolean {
 
 function extractQuotaCooldownMs(err: any): number {
   const msg = String(err?.message || '');
-  const retryMatch = msg.match(/"retryDelay"\s*:\s*"(\d+)s"/);
+  const retryMatch =
+    msg.match(/"retryDelay"\s*:\s*"(\d+(?:\.\d+)?)s"/) ||
+    msg.match(/retry in\s+(\d+(?:\.\d+)?)s/i);
   if (retryMatch && retryMatch[1]) {
-    const sec = parseInt(retryMatch[1], 10);
+    const sec = Math.ceil(parseFloat(retryMatch[1]));
     if (Number.isFinite(sec) && sec > 0) {
       return Math.min(sec * 1000, 6 * 60 * 60 * 1000);
     }
@@ -57,21 +63,52 @@ function extractQuotaCooldownMs(err: any): number {
   return 60 * 1000;
 }
 
+function buildRateLimitError(waitMs: number, cause?: any): Error & { status?: number; retryAfterSeconds?: number } {
+  const waitSec = Math.max(1, Math.ceil(waitMs / 1000));
+  const err = new Error(
+    `Превышен лимит запросов Gemini API (бесплатный тариф). Повторите через ${waitSec} сек. или подключите ключ с биллингом в Settings > Secrets.`
+  ) as Error & { status?: number; retryAfterSeconds?: number; cause?: any };
+  err.status = 429;
+  err.retryAfterSeconds = waitSec;
+  if (cause) err.cause = cause;
+  return err;
+}
+
+function isTransientTimeoutOrUnavailable(err: any): boolean {
+  const msg = String(err?.message || err || '');
+  return (
+    err?.name === 'AbortError' ||
+    err?.status === 503 ||
+    err?.status === 504 ||
+    msg.includes('503') ||
+    msg.includes('504') ||
+    msg.includes('DEADLINE_EXCEEDED') ||
+    msg.includes('UNAVAILABLE') ||
+    msg.toLowerCase().includes('aborted') ||
+    msg.toLowerCase().includes('timeout')
+  );
+}
+
 async function generateContentWithFallback(params: {
   contents: any;
   config: Record<string, any>;
   label: string;
+  primaryTimeoutMs?: number;
 }): Promise<string> {
   const now = Date.now();
   const canTryHydrogen = now >= hydrogenCooldownUntil;
 
   if (canTryHydrogen) {
+    const primaryTimeout = params.primaryTimeoutMs ?? 35000;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), primaryTimeout);
     try {
       const response = await ai.models.generateContent({
         model: 'gemini-4-hydrogen',
         contents: params.contents,
         config: {
           ...params.config,
+          abortSignal: controller.signal,
           thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
         },
       });
@@ -81,12 +118,25 @@ async function generateContentWithFallback(params: {
         const cooldownMs = extractQuotaCooldownMs(firstErr);
         hydrogenCooldownUntil = Date.now() + cooldownMs;
         console.log(
-          `[${params.label}] gemini-4-hydrogen quota/rate limit reached; switching to gemini-3.1-flash-lite for ${Math.round(cooldownMs / 1000)}s.`
+          `[${params.label}] gemini-4-hydrogen rate-limited; using gemini-3.1-flash-lite for ${Math.round(cooldownMs / 1000)}s.`
+        );
+      } else if (isTransientTimeoutOrUnavailable(firstErr)) {
+        // Put gemini-4-hydrogen in a short 2-minute cooldown after a 504/timeout so subsequent field edits respond immediately
+        hydrogenCooldownUntil = Date.now() + 2 * 60 * 1000;
+        console.log(
+          `[${params.label}] gemini-4-hydrogen timed out/unavailable; switching to gemini-3.1-flash-lite for 120s.`
         );
       } else {
-        console.log(`[${params.label}] gemini-4-hydrogen unavailable (${firstErr?.message}), using gemini-3.1-flash-lite.`);
+        console.log(`[${params.label}] gemini-4-hydrogen fallback to gemini-3.1-flash-lite.`);
       }
+    } finally {
+      clearTimeout(timer);
     }
+  }
+
+  const liteRemainingMs = liteCooldownUntil - Date.now();
+  if (liteRemainingMs > 0) {
+    throw buildRateLimitError(liteRemainingMs);
   }
 
   try {
@@ -97,7 +147,32 @@ async function generateContentWithFallback(params: {
     });
     return liteResponse.text || '{}';
   } catch (liteErr: any) {
-    if (isQuotaOrRateLimitError(liteErr) || String(liteErr?.message || '').includes('503')) {
+    if (isQuotaOrRateLimitError(liteErr)) {
+      const cooldownMs = extractQuotaCooldownMs(liteErr);
+      // Only perform a single short retry if Google asks for <= 3s; otherwise enter cooldown immediately
+      if (cooldownMs <= 3000) {
+        await new Promise((resolve) => setTimeout(resolve, Math.max(900, cooldownMs)));
+        try {
+          const retryLite = await ai.models.generateContent({
+            model: 'gemini-3.1-flash-lite',
+            contents: params.contents,
+            config: params.config,
+          });
+          return retryLite.text || '{}';
+        } catch (retryErr: any) {
+          if (isQuotaOrRateLimitError(retryErr)) {
+            const retryCooldownMs = extractQuotaCooldownMs(retryErr);
+            liteCooldownUntil = Date.now() + retryCooldownMs;
+            throw buildRateLimitError(retryCooldownMs, retryErr);
+          }
+          throw retryErr;
+        }
+      }
+      liteCooldownUntil = Date.now() + cooldownMs;
+      throw buildRateLimitError(cooldownMs, liteErr);
+    }
+
+    if (isTransientTimeoutOrUnavailable(liteErr)) {
       await new Promise((resolve) => setTimeout(resolve, 900));
       const retryLite = await ai.models.generateContent({
         model: 'gemini-3.1-flash-lite',
@@ -109,6 +184,11 @@ async function generateContentWithFallback(params: {
     throw liteErr;
   }
 }
+
+// Short-lived in-memory translation cache to avoid burning RPM quota on identical phrases
+const fieldTranslateCache = new Map<string, { value: string; expiresAt: number }>();
+const FIELD_CACHE_TTL_MS = 10 * 60 * 1000;
+const FIELD_CACHE_MAX_ENTRIES = 150;
 
 // 1. Multimodal Document OCR & Certified Translation Endpoint
 app.post('/api/translate-document', async (req: Request, res: Response) => {
@@ -209,7 +289,25 @@ app.post('/api/translate-document', async (req: Request, res: Response) => {
       });
     }
 
-    parts.push({ text: promptText });
+    const storedTemplates = listStoredTemplates();
+    const templatesWithFields = storedTemplates
+      .filter((t) => t.candidateFields.length > 0 || t.paragraphs.length > 0)
+      .slice(0, 12);
+    const templateContextSnippet =
+      templatesWithFields.length > 0
+        ? `\n\nСправочник эталонных шаблонов бюро (используй для точных названий граф и юридических формулировок, НО сами значения читай строго со скана):\n${templatesWithFields
+            .map((t) => {
+              const fields = t.candidateFields
+                .slice(0, 12)
+                .map((f) => f.label)
+                .join(', ');
+              return `- ${t.fileName}${fields ? `: [${fields}]` : ''}`;
+            })
+            .join('\n')
+            .slice(0, 1500)}`
+        : '';
+
+    parts.push({ text: promptText + templateContextSnippet });
 
     // Primary model: gemini-4-hydrogen with ThinkingLevel.LOW (with quota circuit-breaker fallback to gemini-3.1-flash-lite).
 
@@ -240,6 +338,14 @@ app.post('/api/translate-document', async (req: Request, res: Response) => {
                 valueOriginal: { type: Type.STRING },
                 valueTranslated: { type: Type.STRING },
                 confidence: { type: Type.NUMBER },
+                scriptType: {
+                  type: Type.STRING,
+                  description: 'printed, handwritten, or mixed',
+                },
+                readability: {
+                  type: Type.STRING,
+                  description: 'clear, uncertain, or illegible',
+                },
                 category: {
                   type: Type.STRING,
                   description: 'personal, dates, authority, numbers, marginal_notes',
@@ -247,7 +353,12 @@ app.post('/api/translate-document', async (req: Request, res: Response) => {
                 box2d: {
                   type: Type.ARRAY,
                   items: { type: Type.INTEGER },
-                  description: 'Mandatory [ymin, xmin, ymax, xmax] coordinates on 0-1000 scale',
+                  description: 'Mandatory [ymin, xmin, ymax, xmax] coordinates of the value on 0-1000 scale',
+                },
+                labelBox2d: {
+                  type: Type.ARRAY,
+                  items: { type: Type.INTEGER },
+                  description: 'Optional [ymin, xmin, ymax, xmax] coordinates of the field label above the value',
                 },
               },
               required: ['key', 'labelOriginal', 'labelTranslated', 'valueOriginal', 'valueTranslated', 'box2d'],
@@ -399,6 +510,8 @@ app.post('/api/translate-document', async (req: Request, res: Response) => {
         valueOriginal: valOrig,
         valueTranslated: valTrans,
         confidence: typeof f.confidence === 'number' ? f.confidence : 0.95,
+        scriptType: f.scriptType === 'handwritten' || f.scriptType === 'mixed' ? f.scriptType : 'printed',
+        readability: f.readability === 'uncertain' || f.readability === 'illegible' ? f.readability : 'clear',
         category: f.category || 'personal',
         box2d: validBox,
       });
@@ -456,18 +569,29 @@ app.post('/api/translate-document', async (req: Request, res: Response) => {
     return res.json(result);
   } catch (error: any) {
     const status = isQuotaOrRateLimitError(error) ? 429 : 500;
-    console.error('Document translation error:', error?.message || error);
+    const retryAfterSeconds =
+      typeof error?.retryAfterSeconds === 'number'
+        ? error.retryAfterSeconds
+        : Math.ceil(extractQuotaCooldownMs(error) / 1000);
+    if (status === 429) {
+      res.setHeader('Retry-After', String(retryAfterSeconds));
+      console.warn(`Document translation rate-limited (429), retry in ${retryAfterSeconds}s.`);
+    } else {
+      console.error('Document translation error:', error?.message || error);
+    }
     return res.status(status).json({
       error:
         status === 429
-          ? 'Превышен лимит запросов Gemini API. Повторите позже или подключите ключ с биллингом в Settings > Secrets.'
+          ? error?.message ||
+            `Превышен лимит запросов Gemini API. Повторите через ${retryAfterSeconds} сек. или подключите ключ с биллингом в Settings > Secrets.`
           : 'Failed to process and translate document.',
+      retryAfterSeconds: status === 429 ? retryAfterSeconds : undefined,
       details: error?.message || String(error),
     });
   }
 });
 
-// 1b. Single-Field OCR Endpoint (fast cropped bounding-box transcription)
+// 1b. Single-Field OCR Endpoint (fast cropped bounding-box transcription, optionally with translation in 1 call)
 app.post('/api/ocr-field', async (req: Request, res: Response) => {
   try {
     const {
@@ -476,7 +600,9 @@ app.post('/api/ocr-field', async (req: Request, res: Response) => {
       fieldLabelOriginal = '',
       fieldLabelTranslated = '',
       sourceLang = 'Auto-Detect',
+      targetLang = 'Русский (Russian)',
       documentType = 'general',
+      includeTranslation = false,
     } = req.body;
 
     if (!cropBase64) {
@@ -490,7 +616,15 @@ app.post('/api/ocr-field', async (req: Request, res: Response) => {
     }
     const cleanBase64 = String(cropBase64).replace(/^data:[^;]+;base64,/, '');
 
-    const systemInstruction = `Вы — эксперт оптического распознавания текста (OCR) бюро переводов «LinguaDoc».
+    const systemInstruction = includeTranslation
+      ? `Вы — старший эксперт OCR и присяжный переводчик бюро «LinguaDoc».
+Задача: в один шаг точно распознать текст внутри вырезанного фрагмента документа (valueOriginal) И выполнить его официальный перевод на целевой язык ${targetLang} (valueTranslated).
+Правила:
+1. valueOriginal: пишите строго на языке оригинала, сохраняя даты, цифры, серии, номера и рукописное написание. Не переводите valueOriginal.
+2. Если на краях попали обрезанные буквы чужих строк — игнорируйте их и берите только основное значение поля.
+3. valueTranslated: точный официальный перевод valueOriginal на ${targetLang} (корректная транслитерация имен по стандартам ЗАГС/ICAO Doc 9303, точное сохранение цифр и дат).
+4. Если текст неразборчив или отсутствует, верните пустые строки "".`
+      : `Вы — эксперт оптического распознавания текста (OCR) бюро переводов «LinguaDoc».
 Задача: максимально точно переписать (транскрибировать) ТОЛЬКО тот текст, который виден внутри данного вырезанного фрагмента официального документа.
 Правила:
 1. Пишите строго на языке оригинала (кириллица, латиница, цифры, знаки препинания, слэши, серии и номера).
@@ -499,7 +633,10 @@ app.post('/api/ocr-field', async (req: Request, res: Response) => {
 4. Если на краях фрагмента случайно попали обрезанные буквы чужих строк — игнорируйте их и извлекайте только основное значение поля.
 5. Если текст совершенно неразборчив или отсутствует, верните пустую строку "".`;
 
-    const promptText = `Документ: ${documentType}. Ожидаемый реквизит: "${fieldLabelTranslated || fieldLabelOriginal || 'текстовое поле'}" (ориг. метка: "${fieldLabelOriginal}", язык оригинала: ${sourceLang}).
+    const promptText = includeTranslation
+      ? `Документ: ${documentType}. Ожидаемый реквизит: "${fieldLabelTranslated || fieldLabelOriginal || 'текстовое поле'}" (ориг. метка: "${fieldLabelOriginal}", язык оригинала: ${sourceLang}, целевой язык: ${targetLang}).
+Распознайте точное значение поля (valueOriginal) и сразу переведите его (valueTranslated).`
+      : `Документ: ${documentType}. Ожидаемый реквизит: "${fieldLabelTranslated || fieldLabelOriginal || 'текстовое поле'}" (ориг. метка: "${fieldLabelOriginal}", язык оригинала: ${sourceLang}).
 Распознайте точное значение этого поля с приложенного фрагмента изображения.`;
 
     const parts = [
@@ -512,23 +649,29 @@ app.post('/api/ocr-field', async (req: Request, res: Response) => {
       { text: promptText },
     ];
 
+    const schemaProperties: Record<string, any> = {
+      valueOriginal: { type: Type.STRING },
+      confidence: { type: Type.NUMBER },
+    };
+    if (includeTranslation) {
+      schemaProperties.valueTranslated = { type: Type.STRING };
+    }
+
     const config = {
       systemInstruction,
       responseMimeType: 'application/json',
       responseSchema: {
         type: Type.OBJECT,
-        properties: {
-          valueOriginal: { type: Type.STRING },
-          confidence: { type: Type.NUMBER },
-        },
-        required: ['valueOriginal'],
+        properties: schemaProperties,
+        required: includeTranslation ? ['valueOriginal', 'valueTranslated'] : ['valueOriginal'],
       },
     };
 
     const responseText = await generateContentWithFallback({
       contents: { parts },
       config,
-      label: 'Field OCR',
+      label: includeTranslation ? 'Field OCR+Translate' : 'Field OCR',
+      primaryTimeoutMs: 12000,
     });
 
     let cleanJson = responseText.trim();
@@ -542,21 +685,38 @@ app.post('/api/ocr-field', async (req: Request, res: Response) => {
     try {
       parsed = JSON.parse(cleanJson);
     } catch {
-      parsed = { valueOriginal: '' };
+      parsed = { valueOriginal: '', valueTranslated: '' };
     }
 
     return res.json({
       valueOriginal: typeof parsed.valueOriginal === 'string' ? parsed.valueOriginal.trim() : '',
+      ...(includeTranslation
+        ? {
+            valueTranslated:
+              typeof parsed.valueTranslated === 'string' ? parsed.valueTranslated.trim() : '',
+          }
+        : {}),
       confidence: typeof parsed.confidence === 'number' ? parsed.confidence : 0.95,
     });
   } catch (error: any) {
     const status = isQuotaOrRateLimitError(error) ? 429 : 500;
-    console.error('Field OCR error:', error?.message || error);
+    const retryAfterSeconds =
+      typeof error?.retryAfterSeconds === 'number'
+        ? error.retryAfterSeconds
+        : Math.ceil(extractQuotaCooldownMs(error) / 1000);
+    if (status === 429) {
+      res.setHeader('Retry-After', String(retryAfterSeconds));
+      console.warn(`Field OCR rate-limited (429), retry in ${retryAfterSeconds}s.`);
+    } else {
+      console.error('Field OCR error:', error?.message || error);
+    }
     return res.status(status).json({
       error:
         status === 429
-          ? 'Превышен лимит запросов Gemini API для OCR. Повторите через несколько секунд или подключите ключ с биллингом в Settings > Secrets.'
+          ? error?.message ||
+            `Превышен лимит запросов Gemini API для OCR. Повторите через ${retryAfterSeconds} сек. или подключите ключ с биллингом в Settings > Secrets.`
           : 'Failed to recognize text in field crop.',
+      retryAfterSeconds: status === 429 ? retryAfterSeconds : undefined,
       details: error?.message || String(error),
     });
   }
@@ -574,8 +734,15 @@ app.post('/api/translate-field', async (req: Request, res: Response) => {
       documentType = 'general',
     } = req.body;
 
-    if (!String(valueOriginal).trim()) {
+    const trimmedSource = String(valueOriginal).trim();
+    if (!trimmedSource) {
       return res.status(400).json({ error: 'No source text provided for translation.' });
+    }
+
+    const cacheKey = `${trimmedSource}||${sourceLang}||${targetLang}||${documentType}||${fieldLabelTranslated || fieldLabelOriginal}`;
+    const cached = fieldTranslateCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) {
+      return res.json({ valueTranslated: cached.value });
     }
 
     const systemInstruction = `Вы — старший присяжный переводчик бюро нотариальных переводов «LinguaDoc».
@@ -589,7 +756,7 @@ app.post('/api/translate-field', async (req: Request, res: Response) => {
 Язык оригинала: ${sourceLang}
 Целевой язык: ${targetLang}
 Название поля: ${fieldLabelTranslated || fieldLabelOriginal || 'Реквизит'}
-Текст оригинала (OCR): "${String(valueOriginal).trim()}"
+Текст оригинала (OCR): "${trimmedSource}"
 
 Переведите это значение официально.`;
 
@@ -609,6 +776,7 @@ app.post('/api/translate-field', async (req: Request, res: Response) => {
       contents: promptText,
       config,
       label: 'Field Translate',
+      primaryTimeoutMs: 12000,
     });
 
     let cleanJson = responseText.trim();
@@ -625,17 +793,40 @@ app.post('/api/translate-field', async (req: Request, res: Response) => {
       parsed = { valueTranslated: '' };
     }
 
+    const translated = typeof parsed.valueTranslated === 'string' ? parsed.valueTranslated.trim() : '';
+    if (translated) {
+      if (fieldTranslateCache.size >= FIELD_CACHE_MAX_ENTRIES) {
+        const firstKey = fieldTranslateCache.keys().next().value;
+        if (firstKey) fieldTranslateCache.delete(firstKey);
+      }
+      fieldTranslateCache.set(cacheKey, {
+        value: translated,
+        expiresAt: Date.now() + FIELD_CACHE_TTL_MS,
+      });
+    }
+
     return res.json({
-      valueTranslated: typeof parsed.valueTranslated === 'string' ? parsed.valueTranslated.trim() : '',
+      valueTranslated: translated,
     });
   } catch (error: any) {
     const status = isQuotaOrRateLimitError(error) ? 429 : 500;
-    console.error('Field translation error:', error?.message || error);
+    const retryAfterSeconds =
+      typeof error?.retryAfterSeconds === 'number'
+        ? error.retryAfterSeconds
+        : Math.ceil(extractQuotaCooldownMs(error) / 1000);
+    if (status === 429) {
+      res.setHeader('Retry-After', String(retryAfterSeconds));
+      console.warn(`Field translation rate-limited (429), retry in ${retryAfterSeconds}s.`);
+    } else {
+      console.error('Field translation error:', error?.message || error);
+    }
     return res.status(status).json({
       error:
         status === 429
-          ? 'Превышен лимит запросов Gemini API для перевода. Повторите через несколько секунд или подключите ключ с биллингом в Settings > Secrets.'
+          ? error?.message ||
+            `Превышен лимит запросов Gemini API для перевода. Повторите через ${retryAfterSeconds} сек. или подключите ключ с биллингом в Settings > Secrets.`
           : 'Failed to translate field value.',
+      retryAfterSeconds: status === 429 ? retryAfterSeconds : undefined,
       details: error?.message || String(error),
     });
   }
@@ -703,6 +894,41 @@ app.delete('/api/documents/:id', (req: Request, res: Response) => {
   } catch (error: any) {
     console.error('Delete document error:', error);
     return res.status(500).json({ error: 'Failed to delete document.' });
+  }
+});
+
+// 3. Bureau Reference Templates Library (from Google Drive folder scan)
+app.get('/api/templates', (_req: Request, res: Response) => {
+  try {
+    const templates = listStoredTemplates();
+    return res.json({ templates });
+  } catch (error: any) {
+    console.error('List stored templates error:', error);
+    return res.status(500).json({ error: 'Failed to load template library.' });
+  }
+});
+
+app.post('/api/templates/sync', (req: Request, res: Response) => {
+  try {
+    const templates = Array.isArray(req.body?.templates) ? req.body.templates : null;
+    if (!templates) {
+      return res.status(400).json({ error: 'Missing templates array in request body.' });
+    }
+    const result = replaceStoredTemplates(templates);
+    return res.json(result);
+  } catch (error: any) {
+    console.error('Sync templates error:', error);
+    return res.status(500).json({ error: 'Failed to save template library.' });
+  }
+});
+
+app.delete('/api/templates', (_req: Request, res: Response) => {
+  try {
+    clearStoredTemplates();
+    return res.json({ cleared: true });
+  } catch (error: any) {
+    console.error('Clear templates error:', error);
+    return res.status(500).json({ error: 'Failed to clear template library.' });
   }
 });
 

@@ -16,6 +16,7 @@ import {
 import { DocumentTranslationData } from '../types/document';
 import { convertPdfToImageDataUrl } from '../utils/pdfRenderer';
 import { enhanceScanImageDataUrl } from '../utils/cropBoxImage';
+import { GoogleDriveBrowser } from './GoogleDriveBrowser';
 
 export interface SavedDocumentSummary {
   id: string;
@@ -73,6 +74,7 @@ export const DocumentUploader: React.FC<DocumentUploaderProps> = ({
   setIsLoading,
 }) => {
   const [targetLang, setTargetLang] = useState<string>('Русский (Russian)');
+  const [selectedDocType, setSelectedDocType] = useState<string>('auto');
   const [enhanceScan, setEnhanceScan] = useState<boolean>(false);
   const [previewImage, setPreviewImage] = useState<string | null>(null);
   const [renderedPdfImage, setRenderedPdfImage] = useState<string | null>(null);
@@ -240,7 +242,7 @@ export const DocumentUploader: React.FC<DocumentUploaderProps> = ({
           mimeType: mimeToUse,
           sourceLang: 'Auto-Detect',
           targetLang,
-          documentType: 'general',
+          documentType: selectedDocType,
         }),
       });
 
@@ -312,28 +314,57 @@ export const DocumentUploader: React.FC<DocumentUploaderProps> = ({
               Скан или фото документа (JPG, PNG, PDF)
             </label>
 
-            {/* Target Language Only */}
-            <div className="flex items-center gap-2">
-              <label
-                htmlFor="target-lang-select"
-                className="flex items-center gap-1.5 text-xs font-medium text-slate-600 dark:text-slate-300 whitespace-nowrap"
-              >
-                <Languages className="h-3.5 w-3.5 text-slate-500" />
-                <span>Целевой язык перевода:</span>
-              </label>
-              <select
-                id="target-lang-select"
-                value={targetLang}
-                onChange={(e) => setTargetLang(e.target.value)}
-                disabled={isLoading}
-                className="rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-xs font-semibold text-slate-800 focus:border-slate-400 focus:outline-none dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
-              >
-                {TARGET_LANGUAGES.map((lang) => (
-                  <option key={lang} value={lang}>
-                    {lang}
-                  </option>
-                ))}
-              </select>
+            {/* Target Language & Document Type Selectors */}
+            <div className="flex flex-wrap items-center gap-3">
+              <div className="flex items-center gap-2">
+                <label
+                  htmlFor="doc-type-select"
+                  className="text-xs font-medium text-slate-600 dark:text-slate-300 whitespace-nowrap"
+                >
+                  <span>Тип бланка:</span>
+                </label>
+                <select
+                  id="doc-type-select"
+                  value={selectedDocType}
+                  onChange={(e) => setSelectedDocType(e.target.value)}
+                  disabled={isLoading}
+                  className="rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-xs font-semibold text-slate-800 focus:border-slate-400 focus:outline-none dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
+                >
+                  <option value="auto">Автоопределение</option>
+                  <option value="passport">Паспорт</option>
+                  <option value="id_card">ID-карта</option>
+                  <option value="birth_certificate">Свидетельство о рождении</option>
+                  <option value="marriage_certificate">Свидетельство о браке</option>
+                  <option value="death_certificate">Свидетельство о смерти</option>
+                  <option value="divorce_certificate">Свидетельство о расторжении брака</option>
+                  <option value="driver_license">Водительские права</option>
+                  <option value="diploma">Диплом / Аттестат</option>
+                  <option value="general">Общий документ</option>
+                </select>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <label
+                  htmlFor="target-lang-select"
+                  className="flex items-center gap-1.5 text-xs font-medium text-slate-600 dark:text-slate-300 whitespace-nowrap"
+                >
+                  <Languages className="h-3.5 w-3.5 text-slate-500" />
+                  <span>Перевод на:</span>
+                </label>
+                <select
+                  id="target-lang-select"
+                  value={targetLang}
+                  onChange={(e) => setTargetLang(e.target.value)}
+                  disabled={isLoading}
+                  className="rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-xs font-semibold text-slate-800 focus:border-slate-400 focus:outline-none dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
+                >
+                  {TARGET_LANGUAGES.map((lang) => (
+                    <option key={lang} value={lang}>
+                      {lang}
+                    </option>
+                  ))}
+                </select>
+              </div>
             </div>
           </div>
 
@@ -503,6 +534,9 @@ export const DocumentUploader: React.FC<DocumentUploaderProps> = ({
           </button>
         </div>
       </div>
+
+      {/* Google Drive Shared Folder Checker & Importer */}
+      <GoogleDriveBrowser onImportFile={processSelectedFile} disabled={isLoading} />
 
       {/* Saved Translations History (SQLite) */}
       <section className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm dark:border-slate-800 dark:bg-slate-900">

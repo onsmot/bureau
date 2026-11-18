@@ -6,8 +6,6 @@ import {
   ArrowRight,
   Crop,
   Eye,
-  Languages,
-  RefreshCw,
 } from 'lucide-react';
 import { DocumentField } from '../types/document';
 
@@ -16,16 +14,8 @@ interface CropInspectorPanelProps {
   boxDraft: [number, number, number, number] | null;
   previewImageUrl?: string;
   actionStatus: 'ocr' | 'translate' | null;
-  actionError: string | null;
   onDraftChange: (nextBox: [number, number, number, number]) => void;
   onApplyBox: (fieldId: string, newBox: [number, number, number, number]) => void;
-  onFieldTextChange: (
-    fieldId: string,
-    key: 'valueOriginal' | 'valueTranslated',
-    value: string
-  ) => void;
-  onRunOcr: (fieldId: string) => void;
-  onRunTranslate: (fieldId: string) => void;
 }
 
 export const CropInspectorPanel: React.FC<CropInspectorPanelProps> = ({
@@ -33,12 +23,8 @@ export const CropInspectorPanel: React.FC<CropInspectorPanelProps> = ({
   boxDraft,
   previewImageUrl,
   actionStatus,
-  actionError,
   onDraftChange,
   onApplyBox,
-  onFieldTextChange,
-  onRunOcr,
-  onRunTranslate,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const activeBox = boxDraft || field?.box2d || [150, 150, 250, 550];
@@ -78,7 +64,7 @@ export const CropInspectorPanel: React.FC<CropInspectorPanelProps> = ({
           Выберите рамку на скане или строку в таблице
         </p>
         <p className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">
-          Здесь отобразится увеличенный живой фрагмент кропа, точные координаты, кнопки сдвига и поля OCR/перевода.
+          Здесь отобразится увеличенный живой фрагмент кропа, точные координаты и кнопки сдвига.
         </p>
       </div>
     );
@@ -247,63 +233,6 @@ export const CropInspectorPanel: React.FC<CropInspectorPanelProps> = ({
             - Ниже
           </button>
         </div>
-      </div>
-
-      {/* OCR & Translation Text Fields */}
-      <div className="space-y-3">
-        <div>
-          <div className="flex items-center justify-between mb-1">
-            <label className="text-[11px] font-semibold text-slate-600 dark:text-slate-300">
-              Текст оригинала (OCR)
-            </label>
-            <button
-              type="button"
-              onClick={() => onRunOcr(field.id)}
-              disabled={Boolean(actionStatus)}
-              className="inline-flex items-center gap-1 rounded border border-amber-300 bg-amber-50 px-2 py-0.5 text-[10px] font-semibold text-amber-900 hover:bg-amber-100 disabled:opacity-50 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200"
-            >
-              <RefreshCw className={`h-2.5 w-2.5 ${actionStatus === 'ocr' ? 'animate-spin' : ''}`} />
-              <span>{actionStatus === 'ocr' ? 'OCR...' : 'Распознать OCR'}</span>
-            </button>
-          </div>
-          <textarea
-            rows={2}
-            value={field.valueOriginal}
-            onChange={(e) => onFieldTextChange(field.id, 'valueOriginal', e.target.value)}
-            className="w-full rounded-lg border border-slate-200 bg-white p-2 font-mono text-xs text-slate-900 focus:border-amber-500 focus:outline-none dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
-          />
-        </div>
-
-        <div>
-          <div className="flex items-center justify-between mb-1">
-            <label className="text-[11px] font-semibold text-slate-600 dark:text-slate-300">
-              Значение перевода
-            </label>
-            <button
-              type="button"
-              onClick={() => onRunTranslate(field.id)}
-              disabled={Boolean(actionStatus) || !field.valueOriginal?.trim()}
-              className="inline-flex items-center gap-1 rounded border border-blue-300 bg-blue-50 px-2 py-0.5 text-[10px] font-semibold text-blue-800 hover:bg-blue-100 disabled:opacity-50 dark:border-blue-800 dark:bg-blue-950/40 dark:text-blue-200"
-            >
-              {actionStatus === 'translate' ? (
-                <RefreshCw className="h-2.5 w-2.5 animate-spin" />
-              ) : (
-                <Languages className="h-2.5 w-2.5" />
-              )}
-              <span>{actionStatus === 'translate' ? 'Перевод...' : 'Перевести'}</span>
-            </button>
-          </div>
-          <textarea
-            rows={2}
-            value={field.valueTranslated}
-            onChange={(e) => onFieldTextChange(field.id, 'valueTranslated', e.target.value)}
-            className="w-full rounded-lg border border-slate-200 bg-white p-2 text-xs font-medium text-slate-900 focus:border-blue-500 focus:outline-none dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
-          />
-        </div>
-
-        {actionError && (
-          <p className="text-[11px] text-red-600 dark:text-red-400">{actionError}</p>
-        )}
       </div>
     </div>
   );

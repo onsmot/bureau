@@ -64,6 +64,24 @@ db.exec(`
     PRIMARY KEY (document_id, id),
     FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE
   );
+
+  CREATE TABLE IF NOT EXISTS template_library (
+    id TEXT PRIMARY KEY,
+    source_folder_id TEXT NOT NULL DEFAULT '',
+    source_folder_name TEXT NOT NULL DEFAULT '',
+    folder_path TEXT NOT NULL DEFAULT '',
+    file_name TEXT NOT NULL,
+    mime_type TEXT NOT NULL DEFAULT '',
+    kind TEXT NOT NULL DEFAULT 'other',
+    page_count INTEGER NOT NULL DEFAULT 1,
+    has_text_layer INTEGER NOT NULL DEFAULT 1,
+    candidate_fields_json TEXT NOT NULL DEFAULT '[]',
+    paragraphs_json TEXT NOT NULL DEFAULT '[]',
+    tables_json TEXT NOT NULL DEFAULT '[]',
+    text_preview TEXT NOT NULL DEFAULT '',
+    owner_email TEXT NOT NULL DEFAULT '',
+    updated_at INTEGER NOT NULL
+  );
 `);
 
 export interface DocumentSummary {
@@ -332,4 +350,132 @@ export function saveOrUpdateDocument(doc: any): { id: string; updatedAt: number 
 export function deleteSavedDocument(id: string): boolean {
   const result = db.prepare('DELETE FROM documents WHERE id = ?').run(id);
   return Number(result.changes) > 0;
+}
+
+export interface StoredTemplateRecord {
+  id: string;
+  sourceFolderId: string;
+  sourceFolderName: string;
+  folderPath: string;
+  fileName: string;
+  mimeType: string;
+  kind: string;
+  pageCount: number;
+  hasTextLayer: boolean;
+  candidateFields: Array<{ label: string; sampleValue?: string }>;
+  paragraphs: string[];
+  tables: string[][][];
+  textPreview: string;
+  ownerEmail?: string;
+  updatedAt: number;
+}
+
+export function listStoredTemplates(): StoredTemplateRecord[] {
+  const stmt = db.prepare(`
+    SELECT
+      id,
+      source_folder_id AS sourceFolderId,
+      source_folder_name AS sourceFolderName,
+      folder_path AS folderPath,
+      file_name AS fileName,
+      mime_type AS mimeType,
+      kind,
+      page_count AS pageCount,
+      has_text_layer AS hasTextLayer,
+      candidate_fields_json AS candidateFieldsJson,
+      paragraphs_json AS paragraphsJson,
+      tables_json AS tablesJson,
+      text_preview AS textPreview,
+      owner_email AS ownerEmail,
+      updated_at AS updatedAt
+    FROM template_library
+    ORDER BY folder_path ASC, file_name ASC
+  `);
+
+  const rows = stmt.all() as any[];
+  return rows.map((row) => {
+    const safeParse = <T,>(raw: string, fallback: T): T => {
+      try {
+        return JSON.parse(raw) as T;
+      } catch {
+        return fallback;
+      }
+    };
+    return {
+      id: row.id,
+      sourceFolderId: row.sourceFolderId,
+      sourceFolderName: row.sourceFolderName,
+      folderPath: row.folderPath,
+      fileName: row.fileName,
+      mimeType: row.mimeType,
+      kind: row.kind,
+      pageCount: Number(row.pageCount) || 1,
+      hasTextLayer: Boolean(row.hasTextLayer),
+      candidateFields: safeParse(row.candidateFieldsJson, []),
+      paragraphs: safeParse(row.paragraphsJson, []),
+      tables: safeParse(row.tablesJson, []),
+      textPreview: row.textPreview || '',
+      ...(row.ownerEmail ? { ownerEmail: row.ownerEmail } : {}),
+      updatedAt: Number(row.updatedAt) || 0,
+    };
+  });
+}
+
+export function replaceStoredTemplates(templates: any[]): { count: number; updatedAt: number } {
+  const now = Date.now();
+  const list = Array.isArray(templates) ? templates : [];
+
+  db.exec('BEGIN');
+  try {
+    db.prepare('DELETE FROM template_library').run();
+    const insertStmt = db.prepare(`
+      INSERT INTO template_library (
+        id,
+        source_folder_id,
+        source_folder_name,
+        folder_path,
+        file_name,
+        mime_type,
+        kind,
+        page_count,
+        has_text_layer,
+        candidate_fields_json,
+        paragraphs_json,
+        tables_json,
+        text_preview,
+        owner_email,
+        updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    list.forEach((tpl, idx) => {
+      insertStmt.run(
+        String(tpl.id || `tpl-${idx}-${now}`),
+        String(tpl.sourceFolderId || ''),
+        String(tpl.sourceFolderName || ''),
+        String(tpl.folderPath || ''),
+        String(tpl.fileName || `template_${idx}`),
+        String(tpl.mimeType || ''),
+        String(tpl.kind || 'other'),
+        Number(tpl.pageCount) || 1,
+        tpl.hasTextLayer ? 1 : 0,
+        JSON.stringify(Array.isArray(tpl.candidateFields) ? tpl.candidateFields.slice(0, 45) : []),
+        JSON.stringify(Array.isArray(tpl.paragraphs) ? tpl.paragraphs.slice(0, 60) : []),
+        JSON.stringify(Array.isArray(tpl.tables) ? tpl.tables.slice(0, 6) : []),
+        String(tpl.textPreview || '').slice(0, 3500),
+        String(tpl.ownerEmail || ''),
+        now
+      );
+    });
+
+    db.exec('COMMIT');
+    return { count: list.length, updatedAt: now };
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+}
+
+export function clearStoredTemplates(): void {
+  db.prepare('DELETE FROM template_library').run();
 }

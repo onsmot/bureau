@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Crop, RefreshCw } from 'lucide-react';
+import { Crop, Loader2, ScanText } from 'lucide-react';
 import { DocumentField } from '../types/document';
 import { convertPdfToImageDataUrl } from '../utils/pdfRenderer';
 
@@ -189,7 +189,7 @@ export const SnippetCropViewer: React.FC<SnippetCropViewerProps> = ({
           />
         ) : isPdfConverting ? (
           <div className="flex h-[32px] flex-1 min-w-0 items-center justify-center gap-1.5 rounded-xs bg-amber-50 px-2 text-[10px] font-semibold text-amber-800 dark:bg-amber-950/40 dark:text-amber-300">
-            <RefreshCw className="h-3 w-3 animate-spin text-amber-600" />
+            <Loader2 className="h-3 w-3 animate-spin text-amber-600" />
             <span>Рендеринг PDF...</span>
           </div>
         ) : (
@@ -243,7 +243,11 @@ export const SnippetCropViewer: React.FC<SnippetCropViewerProps> = ({
                 : 'border-amber-300/80 bg-amber-50/80 text-amber-800 hover:bg-amber-100 disabled:opacity-45 disabled:cursor-not-allowed dark:border-amber-800/80 dark:bg-amber-950/40 dark:text-amber-300 dark:hover:bg-amber-900/60'
             }`}
           >
-            <RefreshCw className={`h-2.5 w-2.5 ${actionStatus === 'ocr' ? 'animate-spin' : ''}`} />
+            {actionStatus === 'ocr' ? (
+              <Loader2 className="h-2.5 w-2.5 animate-spin" />
+            ) : (
+              <ScanText className="h-2.5 w-2.5" />
+            )}
             <span>{actionStatus === 'ocr' ? 'OCR...' : 'OCR'}</span>
           </button>
         )}

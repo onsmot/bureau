@@ -19,6 +19,8 @@ export interface DocumentField {
   confidence: number;
   category: 'personal' | 'dates' | 'authority' | 'numbers' | 'marginal_notes';
   box2d?: [number, number, number, number]; // [ymin, xmin, ymax, xmax] in 0-1000 normalized coordinates
+  scriptType?: 'printed' | 'handwritten' | 'mixed';
+  readability?: 'clear' | 'uncertain' | 'illegible';
   cropSnippetUrl?: string; // Optional direct cropped image URL or data URI
 }
 
