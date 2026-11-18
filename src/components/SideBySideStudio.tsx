@@ -1120,32 +1120,32 @@ export const SideBySideStudio: React.FC<SideBySideStudioProps> = ({
                             )}
                           </div>
 
-                          {/* Corner resize handles when selected */}
+                          {/* Corner resize handles when selected (visually hidden, drag-to-resize preserved) */}
                           {isSelected && (
                             <>
                               <div
                                 onPointerDown={(e) => startInlineBoxDrag(e, f.id, activeBox, 'nw')}
                                 onClick={(e) => e.stopPropagation()}
                                 title="Изменить левый верхний угол"
-                                className="absolute -top-1.5 -left-1.5 h-3 w-3 rounded-[2px] border border-slate-950 bg-amber-400/90 hover:bg-amber-300 cursor-nwse-resize touch-none shadow-xs z-40"
+                                className="absolute -top-1.5 -left-1.5 h-3 w-3 opacity-0 cursor-nwse-resize touch-none z-40"
                               />
                               <div
                                 onPointerDown={(e) => startInlineBoxDrag(e, f.id, activeBox, 'ne')}
                                 onClick={(e) => e.stopPropagation()}
                                 title="Изменить правый верхний угол"
-                                className="absolute -top-1.5 -right-1.5 h-3 w-3 rounded-[2px] border border-slate-950 bg-amber-400/90 hover:bg-amber-300 cursor-nesw-resize touch-none shadow-xs z-40"
+                                className="absolute -top-1.5 -right-1.5 h-3 w-3 opacity-0 cursor-nesw-resize touch-none z-40"
                               />
                               <div
                                 onPointerDown={(e) => startInlineBoxDrag(e, f.id, activeBox, 'se')}
                                 onClick={(e) => e.stopPropagation()}
                                 title="Изменить правый нижний угол"
-                                className="absolute -bottom-1.5 -right-1.5 h-3 w-3 rounded-[2px] border border-slate-950 bg-amber-400/90 hover:bg-amber-300 cursor-nwse-resize touch-none shadow-xs z-40"
+                                className="absolute -bottom-1.5 -right-1.5 h-3 w-3 opacity-0 cursor-nwse-resize touch-none z-40"
                               />
                               <div
                                 onPointerDown={(e) => startInlineBoxDrag(e, f.id, activeBox, 'sw')}
                                 onClick={(e) => e.stopPropagation()}
                                 title="Изменить левый нижний угол"
-                                className="absolute -bottom-1.5 -left-1.5 h-3 w-3 rounded-[2px] border border-slate-950 bg-amber-400/90 hover:bg-amber-300 cursor-nesw-resize touch-none shadow-xs z-40"
+                                className="absolute -bottom-1.5 -left-1.5 h-3 w-3 opacity-0 cursor-nesw-resize touch-none z-40"
                               />
                             </>
                           )}
