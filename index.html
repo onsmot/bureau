@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>LinguaDoc - AI Certified Translation Bureau</title>
+    <meta name="description" content="Online AI translation studio for official civil documents (passports, IDs, birth/marriage/death certificates, driver's licenses) with Word (.docx) export, interactive bounding-box OCR refinement, stamp editing, and SQLite document history." />
+    <meta property="og:title" content="LinguaDoc - AI Certified Translation Bureau" />
+    <meta property="og:description" content="Online AI translation studio for official civil documents (passports, IDs, birth/marriage/death certificates, driver's licenses) with Word (.docx) export, interactive bounding-box OCR refinement, stamp editing, and SQLite document history." />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <script>
+      // Suppress Vite HMR WebSocket connection errors in AI Studio iframe environment
+      window.addEventListener('unhandledrejection', function (event) {
+        if (
+          event.reason &&
+          (event.reason.message === 'WebSocket closed without opened.' ||
+            String(event.reason).includes('WebSocket') ||
+            String(event.reason?.stack).includes('@vite/client'))
+        ) {
+          event.preventDefault();
+        }
+      });
+      window.addEventListener('error', function (event) {
+        if (
+          event.message &&
+          (event.message.includes('WebSocket') ||
+            String(event.filename).includes('@vite/client'))
+        ) {
+          event.preventDefault();
+        }
+      });
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+

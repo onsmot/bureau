@@ -1,0 +1,6 @@
+{
+  "name": "LinguaDoc - AI Certified Translation Bureau",
+  "description": "Online AI translation studio for official civil documents (passports, IDs, birth/marriage/death certificates, driver's licenses) with Word (.docx) export, interactive bounding-box OCR refinement, stamp editing, and SQLite document history.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
