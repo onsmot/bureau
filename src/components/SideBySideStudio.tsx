@@ -24,6 +24,7 @@ import {
   ChevronsRight,
   MousePointer2,
   Hand,
+  Maximize2,
 } from 'lucide-react';
 import { DocumentTranslationData, DocumentField, StampOrSeal } from '../types/document';
 import { downloadDocumentAsDocx } from '../utils/docxGenerator';
@@ -1105,7 +1106,10 @@ export const SideBySideStudio: React.FC<SideBySideStudioProps> = ({
                                   onPointerDown={(e) => e.stopPropagation()}
                                   onClick={(e) => {
                                     e.stopPropagation();
-                                    setAdjustingFieldId(f.id);
+                                    setSelectedBoxFieldId(f.id);
+                                    setHighlightBox(activeBox);
+                                    setRightPanelTab('crop');
+                                    setIsRightPanelOpen(true);
                                   }}
                                   title="Открыть крупное окно настройки области OCR"
                                   className="ml-0.5 inline-flex items-center justify-center rounded bg-slate-950/20 p-0.5 text-slate-950 hover:bg-slate-950/35 cursor-pointer"
